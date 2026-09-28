@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f5ef">
+  <title>Stall payments | StallPay</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="StallPay home"><span class="brand-mark">S</span><span class="brand-name">StallPay</span></a>
+    <div class="header-right"><span class="header-tag">Stall checkout</span><a class="header-link" href="/">Home</a></div>
+  </header>
+
+  <main class="stall-page">
+    <section id="loginPanel" class="login-panel">
+      <p class="eyebrow">Stall workspace / sign in</p>
+      <h2>Welcome back.</h2>
+      <p>Enter the stall key provided by your event organizer.</p>
+      <form id="loginForm">
+        <label class="control-label" for="stallKey">Stall key</label>
+        <input class="input" id="stallKey" name="stallKey" autocomplete="off" placeholder="STALL-XXXXXX-XXXXXX" required>
+        <button class="button" id="loginButton" type="submit">Continue <span aria-hidden="true">→</span></button>
+        <p class="message" id="loginMessage" role="status"></p>
+      </form>
+    </section>
+
+    <section id="workspace" class="hidden">
+      <div class="stall-welcome">
+        <div>
+          <p class="eyebrow">Stall workspace / payment desk</p>
+          <h1 id="stallName">Your stall</h1>
+          <p>Create a one-time UPI QR for each sale.</p>
+        </div>
+        <button class="button secondary" id="signOutButton" type="button">Sign out</button>
+      </div>
+
+      <div class="stall-workspace">
+        <div class="stall-grid">
+          <section class="payment-form">
+            <h2>New payment</h2>
+            <p class="form-caption">Enter the amount to collect from your customer.</p>
+            <form id="paymentForm">
+              <label class="control-label" for="amount">Amount</label>
+              <div class="amount-field">
+                <span class="currency" aria-hidden="true">₹</span>
+                <input class="input" id="amount" name="amount" type="number" inputmode="decimal" min="1" step="0.01" placeholder="0.00" required>
+              </div>
+              <div class="quick-amounts" aria-label="Quick amount selection">
+                <button class="quick-amount" type="button" data-amount="50">₹50</button>
+                <button class="quick-amount" type="button" data-amount="100">₹100</button>
+                <button class="quick-amount" type="button" data-amount="200">₹200</button>
+                <button class="quick-amount" type="button" data-amount="500">₹500</button>
+              </div>
+              <label class="control-label" for="description" style="margin-top:20px">Item or note <span>(optional)</span></label>
+              <input class="input" id="description" name="description" maxlength="120" placeholder="e.g. Lunch combo">
+              <button class="button accent" id="generateButton" type="submit">Generate payment QR <span aria-hidden="true">↗</span></button>
+              <p class="message" id="paymentMessage" role="status"></p>
+            </form>
+          </section>
+
+          <section class="qr-panel" id="qrPanel" aria-live="polite">
+            <p class="eyebrow">Customer scan</p>
+            <h2 id="qrHeading">Your QR appears here</h2>
+            <div class="qr-placeholder" id="qrPlaceholder">UPI / QR</div>
+            <img id="qrImage" class="hidden" alt="Scan this QR to pay">
+            <p class="qr-total hidden" id="qrTotal"></p>
+            <div id="qrStatus" class="qr-status hidden"></div>
+            <p class="qr-foot hidden" id="qrExpiry">QR expires in 15 minutes.</p>
+            <button class="button secondary hidden" id="newPaymentButton" type="button" style="margin-top:13px">New payment</button>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">StallPay / Secure payments powered by Razorpay</footer>
+
+<script>
+const loginPanel = document.getElementById('loginPanel');
+const workspace = document.getElementById('workspace');
+const loginMessage = document.getElementById('loginMessage');
+const paymentMessage = document.getElementById('paymentMessage');
+let stallToken = localStorage.getItem('stallToken');
+let stallName = localStorage.getItem('stallName');
+let pollTimer = null;
+let currentPaymentId = null;
+
+function showWorkspace() {
+  loginPanel.classList.add('hidden');
+  workspace.classList.remove('hidden');
+  document.getElementById('stallName').textContent = stallName || 'Your stall';
+}
+
+if (stallToken) showWorkspace();
+
+document.getElementById('loginForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = document.getElementById('loginButton');
+  button.disabled = true;
+  loginMessage.textContent = '';
+  try {
+    const response = await fetch('/api/stall/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: document.getElementById('stallKey').value.trim() }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || 'Could not sign in. Check the stall key.');
+    stallToken = data.token;
+    stallName = data.stallName;
+    localStorage.setItem('stallToken', stallToken);
+    localStorage.setItem('stallName', stallName);
+    showWorkspace();
+  } catch (error) {
+    loginMessage.textContent = error.message || 'Could not connect. Try again.';
+  } finally {
+    button.disabled = false;
+  }
+});
+
+document.querySelectorAll('[data-amount]').forEach((button) => {
+  button.addEventListener('click', () => {
+    document.getElementById('amount').value = button.dataset.amount;
+  });
+});
+
+document.getElementById('paymentForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const amount = Number(document.getElementById('amount').value);
+  const description = document.getElementById('description').value.trim();
+  const button = document.getElementById('generateButton');
+  paymentMessage.textContent = '';
+  if (!Number.isFinite(amount) || amount < 1) {
+    paymentMessage.textContent = 'Enter an amount of at least ₹1.';
+    return;
+  }
+  button.disabled = true;
+  button.textContent = 'Creating QR…';
+  try {
+    const response = await fetch('/api/stall/payment', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-stall-token': stallToken },
+      body: JSON.stringify({ amount, description }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      if (response.status === 401) signOut();
+      throw new Error(data.detail || 'Could not create the payment QR.');
+    }
+    showQr(data);
+  } catch (error) {
+    paymentMessage.textContent = error.message || 'Could not connect. Try again.';
+  } finally {
+    button.disabled = false;
+    button.innerHTML = 'Generate payment QR <span aria-hidden="true">↗</span>';
+  }
+});
+
+function showQr(payment) {
+  currentPaymentId = payment.paymentId;
+  document.getElementById('qrPanel').classList.add('has-qr');
+  document.getElementById('qrHeading').textContent = 'Scan to pay';
+  document.getElementById('qrPlaceholder').classList.add('hidden');
+  const image = document.getElementById('qrImage');
+  image.src = payment.qrImageUrl;
+  image.classList.remove('hidden');
+  document.getElementById('qrTotal').textContent = `₹${Number(payment.amount).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  document.getElementById('qrTotal').classList.remove('hidden');
+  const status = document.getElementById('qrStatus');
+  status.textContent = 'Waiting for payment';
+  status.className = 'qr-status';
+  status.classList.remove('hidden');
+  document.getElementById('qrExpiry').classList.remove('hidden');
+  document.getElementById('newPaymentButton').classList.remove('hidden');
+  document.getElementById('paymentForm').classList.add('hidden');
+  if (pollTimer) clearInterval(pollTimer);
+  pollStatus();
+  pollTimer = setInterval(pollStatus, 3000);
+}
+
+async function pollStatus() {
+  if (!currentPaymentId) return;
+  try {
+    const response = await fetch(`/api/stall/payment/${currentPaymentId}/status`, {
+      headers: { 'x-stall-token': stallToken },
+    });
+    const data = await response.json();
+    if (response.status === 401) {
+      signOut();
+      return;
+    }
+    if (data.status === 'paid') {
+      clearInterval(pollTimer);
+      pollTimer = null;
+      const status = document.getElementById('qrStatus');
+      status.textContent = 'Payment received';
+      status.classList.add('paid');
+    }
+  } catch (error) {
+    document.getElementById('qrStatus').textContent = 'Connection interrupted. Checking again…';
+  }
+}
+
+document.getElementById('newPaymentButton').addEventListener('click', () => {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  currentPaymentId = null;
+  document.getElementById('paymentForm').reset();
+  document.getElementById('paymentForm').classList.remove('hidden');
+  document.getElementById('paymentMessage').textContent = '';
+  document.getElementById('qrPanel').classList.remove('has-qr');
+  document.getElementById('qrHeading').textContent = 'Your QR appears here';
+  document.getElementById('qrImage').classList.add('hidden');
+  document.getElementById('qrImage').removeAttribute('src');
+  document.getElementById('qrPlaceholder').classList.remove('hidden');
+  ['qrTotal', 'qrStatus', 'qrExpiry', 'newPaymentButton'].forEach((id) => document.getElementById(id).classList.add('hidden'));
+});
+
+document.getElementById('signOutButton').addEventListener('click', signOut);
+function signOut() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+  stallToken = null;
+  stallName = null;
+  localStorage.removeItem('stallToken');
+  localStorage.removeItem('stallName');
+  workspace.classList.add('hidden');
+  loginPanel.classList.remove('hidden');
+  document.getElementById('stallKey').value = '';
+}
+</script>
+</body>
+</html>

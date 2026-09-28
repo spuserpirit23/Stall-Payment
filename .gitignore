@@ -1,0 +1,18 @@
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+
+# Python environments and generated files
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Local database and SQLite journal files
+data.sqlite
+data.sqlite-*
+
+# Operating-system files
+.DS_Store
+Thumbs.db

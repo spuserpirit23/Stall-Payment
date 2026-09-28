@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f3f5ef">
+  <title>Organizer dashboard | StallPay</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="StallPay home"><span class="brand-mark">S</span><span class="brand-name">StallPay</span></a>
+    <div class="header-right"><span class="header-tag">Organizer workspace</span><a class="header-link" href="/">Home</a></div>
+  </header>
+
+  <main class="page-shell">
+    <section class="page-heading">
+      <div>
+        <p class="eyebrow">Event operations / live overview</p>
+        <h1>Organizer dashboard</h1>
+        <p>Manage stalls and keep every payment accounted for.</p>
+      </div>
+      <div class="heading-actions">
+        <button class="button secondary hidden" id="refreshButton" type="button">Refresh</button>
+        <button class="button accent hidden" id="csvButton" type="button">Export CSV <span aria-hidden="true">↓</span></button>
+      </div>
+    </section>
+
+    <section class="auth-bar" aria-label="Organizer sign in">
+      <div class="field">
+        <label for="adminPassword">Organizer password</label>
+        <input id="adminPassword" type="password" autocomplete="current-password" placeholder="Enter your organizer password">
+      </div>
+      <button class="button accent" id="signInButton" type="button">Sign in</button>
+      <button class="button secondary hidden" id="signOutButton" type="button">Sign out</button>
+      <span id="authState" class="auth-state">Signed out</span>
+    </section>
+    <p class="message" id="pageMessage" role="status"></p>
+
+    <section id="dashboardContent" class="hidden" aria-live="polite">
+      <div class="stat-strip">
+        <div class="stat"><span class="stat-label">Active stalls</span><span class="stat-value" id="stallCount">0</span></div>
+        <div class="stat"><span class="stat-label">Payments</span><span class="stat-value" id="paymentCount">0</span></div>
+        <div class="stat"><span class="stat-label">Collected</span><span class="stat-value" id="collectedTotal">₹0</span></div>
+      </div>
+
+      <div class="dashboard-grid">
+        <section class="section" aria-labelledby="stallsTitle">
+          <div class="section-head">
+            <div><h2 id="stallsTitle">Stalls</h2><p>Issue a unique sign-in key.</p></div>
+            <span class="section-count" id="stallSectionCount">0 total</span>
+          </div>
+          <form class="create-form" id="createStallForm">
+            <label for="newStallName">Add a stall</label>
+            <input class="input" id="newStallName" maxlength="80" placeholder="Stall name" required>
+            <button class="button" id="createStallButton" type="submit">Create stall key <span aria-hidden="true">+</span></button>
+            <div id="keyNotice" class="key-notice hidden" role="status">
+              <p id="keyNoticeTitle">Share this key with the stall owner. It is only shown once.</p>
+              <div class="key-value"><span id="newStallKey"></span><button id="copyKeyButton" type="button">Copy</button></div>
+            </div>
+            <p class="message" id="createMessage" role="status"></p>
+          </form>
+          <div class="stall-list" id="stallList"></div>
+        </section>
+
+        <section class="section" aria-labelledby="paymentsTitle">
+          <div class="section-head">
+            <div><h2 id="paymentsTitle">Payments</h2><p>Latest payment activity across every stall.</p></div>
+            <span class="section-count" id="paymentSectionCount">0 records</span>
+          </div>
+          <div class="table-tools">
+            <input class="input" id="searchPayments" type="search" placeholder="Search stall or item" aria-label="Search payments">
+            <select class="input" id="statusFilter" aria-label="Filter payment status">
+              <option value="all">All statuses</option>
+              <option value="paid">Paid</option>
+              <option value="pending">Pending</option>
+            </select>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Stall</th><th>Amount</th><th>Item / note</th><th>Created</th><th>Status</th></tr></thead>
+              <tbody id="paymentRows"></tbody>
+            </table>
+            <div class="table-empty hidden" id="emptyPayments">No payments match this view.</div>
+          </div>
+        </section>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">StallPay / Organizer dashboard</footer>
+
+<script>
+const adminPasswordInput = document.getElementById('adminPassword');
+const pageMessage = document.getElementById('pageMessage');
+const dashboardContent = document.getElementById('dashboardContent');
+const authState = document.getElementById('authState');
+let adminPassword = sessionStorage.getItem('adminPassword') || '';
+let dashboardData = { stalls: [], payments: [] };
+
+if (adminPassword) {
+  adminPasswordInput.value = adminPassword;
+  loadDashboard();
+}
+
+document.getElementById('signInButton').addEventListener('click', signIn);
+adminPasswordInput.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') signIn();
+});
+document.getElementById('signOutButton').addEventListener('click', signOut);
+document.getElementById('refreshButton').addEventListener('click', loadDashboard);
+document.getElementById('csvButton').addEventListener('click', downloadCsv);
+document.getElementById('createStallForm').addEventListener('submit', createStall);
+document.getElementById('searchPayments').addEventListener('input', renderPayments);
+document.getElementById('statusFilter').addEventListener('change', renderPayments);
+
+async function signIn() {
+  adminPassword = adminPasswordInput.value.trim();
+  if (!adminPassword) {
+    pageMessage.textContent = 'Enter the organizer password from your .env file.';
+    return;
+  }
+  sessionStorage.setItem('adminPassword', adminPassword);
+  await loadDashboard();
+}
+
+async function loadDashboard() {
+  pageMessage.textContent = '';
+  const signInButton = document.getElementById('signInButton');
+  signInButton.disabled = true;
+  try {
+    const response = await fetch('/api/admin/dashboard', {
+      headers: { 'x-admin-password': adminPassword },
+    });
+    const data = await response.json();
+    if (response.status === 401) {
+      signOut();
+      pageMessage.textContent = 'Password not accepted. Check ADMIN_PASSWORD in your .env file.';
+      return;
+    }
+    if (!response.ok) throw new Error(data.detail || 'Could not load the dashboard.');
+    dashboardData = data;
+    dashboardContent.classList.remove('hidden');
+    document.getElementById('signInButton').classList.add('hidden');
+    document.getElementById('signOutButton').classList.remove('hidden');
+    document.getElementById('refreshButton').classList.remove('hidden');
+    document.getElementById('csvButton').classList.remove('hidden');
+    adminPasswordInput.readOnly = true;
+    authState.textContent = 'Connected';
+    renderDashboard();
+  } catch (error) {
+    pageMessage.textContent = error.message || 'Could not connect to the server.';
+  } finally {
+    signInButton.disabled = false;
+  }
+}
+
+function signOut() {
+  adminPassword = '';
+  dashboardData = { stalls: [], payments: [] };
+  sessionStorage.removeItem('adminPassword');
+  adminPasswordInput.value = '';
+  adminPasswordInput.readOnly = false;
+  dashboardContent.classList.add('hidden');
+  document.getElementById('signInButton').classList.remove('hidden');
+  document.getElementById('signOutButton').classList.add('hidden');
+  document.getElementById('refreshButton').classList.add('hidden');
+  document.getElementById('csvButton').classList.add('hidden');
+  authState.textContent = 'Signed out';
+}
+
+function renderDashboard() {
+  const payments = dashboardData.payments;
+  const paidTotal = payments.filter((payment) => payment.status === 'paid')
+    .reduce((total, payment) => total + Number(payment.amount_inr || 0), 0);
+  document.getElementById('stallCount').textContent = dashboardData.stalls.length;
+  document.getElementById('paymentCount').textContent = payments.length;
+  document.getElementById('collectedTotal').textContent = formatMoney(paidTotal);
+  document.getElementById('stallSectionCount').textContent = `${dashboardData.stalls.length} total`;
+  document.getElementById('paymentSectionCount').textContent = `${payments.length} records`;
+  renderStalls();
+  renderPayments();
+}
+
+function renderStalls() {
+  const list = document.getElementById('stallList');
+  if (!dashboardData.stalls.length) {
+    list.innerHTML = '<p class="empty-state">No stalls yet. Create the first one above.</p>';
+    return;
+  }
+  list.innerHTML = dashboardData.stalls.map((stall) => {
+    const stallPayments = dashboardData.payments.filter((payment) => Number(payment.stall_id) === Number(stall.id));
+    const paidAmount = stallPayments.filter((payment) => payment.status === 'paid')
+      .reduce((total, payment) => total + Number(payment.amount_inr || 0), 0);
+    return `<div class="stall-item"><div><strong>${escapeHtml(stall.stall_name)}</strong><span>${stallPayments.length} payments · ${formatMoney(paidAmount)} collected</span></div><span class="stall-id">#${Number(stall.id).toString().padStart(3, '0')}</span></div>`;
+  }).join('');
+}
+
+function renderPayments() {
+  const query = document.getElementById('searchPayments').value.trim().toLowerCase();
+  const status = document.getElementById('statusFilter').value;
+  const filtered = dashboardData.payments.filter((payment) => {
+    const matchesStatus = status === 'all' || payment.status === status;
+    const matchesQuery = !query || `${payment.stall_name} ${payment.description || ''}`.toLowerCase().includes(query);
+    return matchesStatus && matchesQuery;
+  });
+  const rows = document.getElementById('paymentRows');
+  rows.innerHTML = filtered.map((payment) => `<tr>
+    <td>${escapeHtml(payment.stall_name)}</td>
+    <td class="amount">${formatMoney(payment.amount_inr)}</td>
+    <td>${escapeHtml(payment.description || '—')}</td>
+    <td>${formatDate(payment.created_at)}</td>
+    <td><span class="status-pill ${payment.status === 'paid' ? 'paid' : ''}">${escapeHtml(payment.status || 'pending')}</span></td>
+  </tr>`).join('');
+  document.getElementById('emptyPayments').classList.toggle('hidden', filtered.length > 0);
+}
+
+async function createStall(event) {
+  event.preventDefault();
+  const nameInput = document.getElementById('newStallName');
+  const button = document.getElementById('createStallButton');
+  const message = document.getElementById('createMessage');
+  message.textContent = '';
+  button.disabled = true;
+  try {
+    const response = await fetch('/api/admin/stalls', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-admin-password': adminPassword },
+      body: JSON.stringify({ stallName: nameInput.value.trim() }),
+    });
+    const data = await response.json();
+    if (response.status === 401) {
+      signOut();
+      throw new Error('Your session expired. Sign in again.');
+    }
+    if (!response.ok) throw new Error(data.detail || 'Could not create stall.');
+    document.getElementById('newStallKey').textContent = data.key;
+    document.getElementById('keyNotice').classList.remove('hidden');
+    nameInput.value = '';
+    await loadDashboard();
+  } catch (error) {
+    message.textContent = error.message || 'Could not connect to the server.';
+  } finally {
+    button.disabled = false;
+  }
+}
+
+document.getElementById('copyKeyButton').addEventListener('click', async () => {
+  const key = document.getElementById('newStallKey').textContent;
+  try {
+    await navigator.clipboard.writeText(key);
+    document.getElementById('copyKeyButton').textContent = 'Copied';
+  } catch (error) {
+    document.getElementById('copyKeyButton').textContent = 'Select key';
+  }
+});
+
+async function downloadCsv() {
+  pageMessage.textContent = '';
+  try {
+    const response = await fetch('/api/admin/export.csv', {
+      headers: { 'x-admin-password': adminPassword },
+    });
+    if (response.status === 401) {
+      signOut();
+      throw new Error('Your session expired. Sign in again.');
+    }
+    if (!response.ok) throw new Error('CSV export failed. Try again.');
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = 'stall-payments.csv';
+    anchor.click();
+    URL.revokeObjectURL(url);
+  } catch (error) {
+    pageMessage.textContent = error.message || 'Could not download the report.';
+  }
+}
+
+function formatMoney(value) {
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(Number(value || 0));
+}
+
+function formatDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '—';
+  return new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+}
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character]);
+}
+</script>
+</body>
+</html>
